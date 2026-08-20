@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Image → Canva Frame — Vector</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#161616;font-family:system-ui,-apple-system,Segoe UI,Tahoma,sans-serif}
+.wrap{max-width:900px;margin:30px auto;padding:16px}.card{background:#fff;border:1px solid #ddd;border-radius:20px;padding:24px;box-shadow:0 8px 30px #0000000b}
+h1{margin:0 0 8px;font-size:30px}p{color:#666}.drop{margin-top:20px;border:2px dashed #aaa;border-radius:16px;padding:42px;text-align:center;cursor:pointer}
+input[type=file]{display:none}.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;align-items:center}.control{background:#f1f1f1;border-radius:12px;padding:10px 14px}
+input[type=range]{width:150px;vertical-align:middle}button{border:0;border-radius:12px;padding:12px 18px;font-weight:700;cursor:pointer;background:#111;color:#fff}button.secondary{background:#e8e8e8;color:#111}button:disabled{opacity:.45;cursor:not-allowed}
+.status{margin-top:12px;color:#666;font-size:14px}.preview{margin-top:18px;display:flex;justify-content:center;align-items:center;min-height:260px;padding:20px;border-radius:14px;background:repeating-conic-gradient(#eee 0 25%,#fff 0 50%) 0/24px 24px;overflow:auto}
+canvas{max-width:100%;max-height:480px}.note{font-size:13px;margin-top:12px;color:#777}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+<h1>Image → Canva Frame</h1>
+<p>يحوّل الصورة إلى SVG يحتوي على <b>Vector Paths حقيقية</b> بدل وضع PNG داخل SVG.</p>
+<label class="drop" for="file">اضغط هنا لاختيار صورة<br><small>PNG / JPG / WebP</small></label>
+<input id="file" type="file" accept="image/png,image/jpeg,image/webp">
+<div class="row">
+<label class="control">Threshold <input id="thr" type="range" min="1" max="254" value="245"></label>
+<label class="control">Smoothing <input id="smooth" type="range" min="0" max="3" value="1"></label>
+<button id="convert" disabled>تحويل إلى SVG Vector</button>
+<button id="download" class="secondary" disabled>تنزيل SVG</button>
+</div>
+<div class="status" id="status">ماكو ملف مختار.</div>
+<div class="preview"><canvas id="canvas"></canvas></div>
+<div class="note">ملاحظة: الأفضل صورة بخلفية بيضاء أو شفافة وشكل واضح.</div>
+</div></div>
+
+<script>
+const file=document.getElementById('file'),convert=document.getElementById('convert'),download=document.getElementById('download');
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
+const status=document.getElementById('status'),thr=document.getElementById('thr'),smooth=document.getElementById('smooth');
+let img=null, svgText='', filename='canva-frame.svg';
+
+file.onchange=()=>{
+ const f=file.files[0]; if(!f)return;
+ filename=f.name.replace(/\.[^.]+$/,'')+'-frame.svg';
+ const u=URL.createObjectURL(f); img=new Image();
+ img.onload=()=>{
+   const s=Math.min(1200/Math.max(img.width,img.height),1);
+   canvas.width=Math.max(1,Math.round(img.width*s)); canvas.height=Math.max(1,Math.round(img.height*s));
+   ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);
+   convert.disabled=false;status.textContent=`تم تحميل ${f.name} — ${canvas.width}×${canvas.height}`;URL.revokeObjectURL(u);
+ };img.src=u;
+};
+
+function maskFromImage(w,h,t){
+ const d=ctx.getImageData(0,0,w,h).data, m=new Uint8Array(w*h);
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+   const i=(y*w+x)*4,r=d[i],g=d[i+1],b=d[i+2],a=d[i+3];
+   const white=(r>=t&&g>=t&&b>=t);
+   m[y*w+x]=(a>10&&!white)?1:0;
+ }
+ return m;
+}
+function smoothMask(m,w,h){
+ const n=+smooth.value;if(!n)return m;
+ let a=m;
+ for(let k=0;k<n;k++){
+   const b=new Uint8Array(a);
+   for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+     let s=0;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)s+=a[(y+dy)*w+x+dx];
+     b[y*w+x]=s>=5?1:0;
+   } a=b;
+ }
+ return a;
+}
+/* Trace each connected foreground component as a boundary polygon.
+   This is deliberately path-only: no embedded raster image is placed in the SVG. */
+function components(mask,w,h){
+ const seen=new Uint8Array(w*h), comps=[];
+ const qx=new Int32Array(w*h), qy=new Int32Array(w*h);
+ for(let sy=0;sy<h;sy++)for(let sx=0;sx<w;sx++){
+   const si=sy*w+sx;if(!mask[si]||seen[si])continue;
+   let head=0,tail=0,minx=sx,maxx=sx,miny=sy,maxy=sy;
+   qx[tail]=sx;qy[tail++]=sy;seen[si]=1;
+   const pts=[];
+   while(head<tail){
+     const x=qx[head],y=qy[head++];pts.push([x,y]);
+     minx=Math.min(minx,x);maxx=Math.max(maxx,x);miny=Math.min(miny,y);maxy=Math.max(maxy,y);
+     const nb=[[x+1,y],[x-1,y],[x,y+1],[x,y-1]];
+     for(const [nx,ny] of nb)if(nx>=0&&ny>=0&&nx<w&&ny<h){
+       const j=ny*w+nx;if(mask[j]&&!seen[j]){seen[j]=1;qx[tail]=nx;qy[tail++]=ny;}
+     }
+   }
+   if(pts.length<4)continue;
+   comps.push({pts,minx,maxx,miny,maxy});
+ }
+ return comps;
+}
+function boundaryPath(comp,mask,w,h){
+ const S=new Set();
+ for(const [x,y] of comp.pts){
+   const p=y*w+x;
+   if(x===0||!mask[p-1])S.add(`${x},${y}|${x},${y+1}`);
+   if(x===w-1||!mask[p+1])S.add(`${x+1},${y+1}|${x+1},${y}`);
+   if(y===0||!mask[p-w])S.add(`${x},${y}|${x+1},${y}`);
+   if(y===h-1||!mask[p+w])S.add(`${x+1},${y+1}|${x},${y+1}`);
+ }
+ const next=new Map();
+ for(const e of S){const [a,b]=e.split('|');if(!next.has(a))next.set(a,[]);next.get(a).push(b)}
+ const edges=new Set(S), paths=[];
+ while(edges.size){
+   const e=edges.values().next().value;edges.delete(e);
+   const [start,first]=e.split('|');let cur=first, path=[start,first];
+   let guard=0;
+   while(cur!==start&&guard++<100000){
+     const arr=next.get(cur)||[];let found=null;
+     for(const z of arr){const ee=cur+'|'+z;if(edges.has(ee)){found=z;edges.delete(ee);break}}
+     if(!found)break;path.push(found);cur=found;
+   }
+   if(path.length>2){
+     const nums=path.map(p=>p.split(',').map(Number));
+     let d=`M ${nums[0][0]} ${nums[0][1]} `;
+     for(let i=1;i<nums.length;i++)d+=`L ${nums[i][0]} ${nums[i][1]} `;
+     d+='Z';paths.push(d);
+   }
+ }
+ return paths.join(' ');
+}
+convert.onclick=()=>{
+ const w=canvas.width,h=canvas.height;
+ let m=maskFromImage(w,h,+thr.value);m=smoothMask(m,w,h);
+ const comps=components(m,w,h).filter(c=>c.pts.length>8);
+ if(!comps.length){status.textContent='ما قدرت أستخرج شكل واضح. جرّب Threshold مختلف.';return}
+ const paths=comps.map(c=>boundaryPath(c,m,w,h)).filter(Boolean);
+ svgText=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><path d="${paths.join(' ')}" fill="#000" fill-rule="evenodd"/></svg>`;
+ download.disabled=false;status.textContent=`تم إنشاء SVG Vector حقيقي — ${paths.length} مسار. نزّله وجرّبه مع AutoFramer.`;
+};
+download.onclick=()=>{const blob=new Blob([svgText],{type:'image/svg+xml'});const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)};
+</script>
+</body></html>
